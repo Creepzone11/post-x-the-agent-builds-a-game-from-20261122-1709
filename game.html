@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Starfall Catcher — a tiny game built from one prompt</title>
+<style>
+  html,body{margin:0;padding:0;background:#0b1026;height:100%;overflow:hidden}
+  #game{display:block;margin:0 auto;background:#0b1026;touch-action:none}
+  #hint{position:fixed;left:0;right:0;bottom:8px;text-align:center;color:#8fa3c8;
+    font:14px/1.4 system-ui,sans-serif;pointer-events:none}
+</style>
+</head>
+<body>
+<canvas id="game" width="540" height="960"></canvas>
+<div id="hint">Move with &larr; &rarr; or drag &mdash; catch the stars, dodge the bombs (day 7)</div>
+<script>
+"use strict";
+/* Starfall Catcher — built from ONE prompt:
+   "Build a tiny browser game: catch falling stars in a basket with the
+   arrow keys, 60 seconds, score points, and make it get faster."
+   Day 1 (?day=1) is exactly that first build. Day 7 (?day=7, the default)
+   is the same game after a week of daily updates: more star types, combos,
+   particles, levels, a sunset sky, and a best score. Same map, same start. */
+const DAY = new URLSearchParams(location.search).get("day") === "1" ? 1 : 7;
+const cv = document.getElementById("game"), ctx = cv.getContext("2d");
+const W = cv.width, H = cv.height, GROUND = H - 90;
+const basket = { x: W / 2 - 55, y: GROUND, w: 110, h: 34, vx: 0 };
+let stars = [], parts = [], popups = [];
+let score = 0, combo = 0, bestCombo = 0, level = 1, caught = 0;
+let timeLeft = 60, over = false, started = false, last = performance.now();
+let best = +(localStorage.getItem("starfall-best") || 0);
+const keys = {};
+addEventListener("keydown", e => {
+  keys[e.key] = true; started = true;
+  if (e.key === " ") e.preventDefault();
+});
+addEventListener("keyup", e => keys[e.key] = false);
+let dragX = null;
+cv.addEventListener("pointerdown", e => { dragX = e.clientX; started = true; });
+addEventListener("pointermove", e => {
+  if (dragX === null) return;
+  const r = cv.getBoundingClientRect();
+  basket.x = Math.max(0, Math.min(W - basket.w,
+    (e.clientX - r.left) / r.width * W - basket.w / 2));
+});
+addEventListener("pointerup", () => dragX = null);
+
+function sky() {
+  if (DAY === 1) { ctx.fillStyle = "#0b1026"; ctx.fillRect(0, 0, W, H); return; }
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, "#1a0533"); g.addColorStop(0.55, "#5b1a5e");
+  g.addColorStop(0.8, "#c94b6d"); g.addColorStop(1, "#ff8a5c");
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = "#ffe9a8"; ctx.beginPath(); ctx.arc(W - 90, 120, 46, 0, 7); ctx.fill();
+  ctx.fillStyle = "rgba(255,233,168,.25)"; ctx.beginPath(); ctx.arc(W - 90, 120, 62, 0, 7); ctx.fill();
+  ctx.fillStyle = "rgba(255,255,255,.14)";
+  for (const [cx, cy, cw] of [[90, 150, 150], [300, 230, 190], [430, 90, 120]])
+    { ctx.beginPath(); ctx.ellipse(cx, cy, cw / 2, 22, 0, 0, 7); ctx.fill(); }
+  ctx.fillStyle = "#2a1445";
+  ctx.beginPath(); ctx.moveTo(0, GROUND + 40);
+  ctx.quadraticCurveTo(140, GROUND - 60, 300, GROUND + 10);
+  ctx.quadraticCurveTo(430, GROUND + 50, W, GROUND - 10);
+  ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.fill();
+}
+function starShape(x, y, r, color) {
+  ctx.fillStyle = color; ctx.beginPath();
+  for (let i = 0; i < 10; i++) {
+    const a = -Math.PI / 2 + i * Math.PI / 5, rr = i % 2 ? r * 0.45 : r;
+    ctx[i ? "lineTo" : "moveTo"](x + Math.cos(a) * rr, y + Math.sin(a) * rr);
+  }
+  ctx.closePath(); ctx.fill();
+}
+function spawn() {
+  const r = Math.random();
+  let type = "gold";
+  if (DAY === 7) type = r < 0.62 ? "gold" : r < 0.88 ? "pink" : "bomb";
+  stars.push({
+    x: 30 + Math.random() * (W - 60), y: -30,
+    vy: (DAY === 1 ? 150 : 170 + level * 22) * (0.85 + Math.random() * 0.4),
+    r: type === "bomb" ? 20 : 16 + Math.random() * 8, type,
+    spin: Math.random() * 6.28
+  });
+}
+function burst(x, y, color, n) {
+  if (DAY === 1) return;
+  for (let i = 0; i < n; i++) parts.push({
+    x, y, vx: (Math.random() - 0.5) * 320, vy: -Math.random() * 260,
+    life: 0.6 + Math.random() * 0.4, color
+  });
+}
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  if (!over && started) {
+    timeLeft -= dt;
+    if (timeLeft <= 0) { timeLeft = 0; over = true;
+      if (score > best) { best = score; localStorage.setItem("starfall-best", best); } }
+    if (keys.ArrowLeft) basket.x -= 420 * dt;
+    if (keys.ArrowRight) basket.x += 420 * dt;
+    basket.x = Math.max(0, Math.min(W - basket.w, basket.x));
+    if (Math.random() < dt * (DAY === 1 ? 0.9 : 1.1 + level * 0.35)) spawn();
+    level = 1 + Math.floor((60 - timeLeft) / 15);
+    for (const s of stars) { s.y += s.vy * dt; s.spin += dt * 3; }
+    stars = stars.filter(s => {
+      const inBasket = s.y + s.r >= basket.y && s.y < basket.y + basket.h + 14 &&
+        s.x > basket.x - 6 && s.x < basket.x + basket.w + 6;
+      if (inBasket) {
+        caught++;
+        if (s.type === "bomb") {
+          score = Math.max(0, score - 5); combo = 0;
+          popups.push({ x: s.x, y: basket.y - 20, txt: "-5!", color: "#ff5a5a", life: 0.9 });
+          burst(s.x, basket.y, "#ff5a5a", 10);
+        } else {
+          const pts = (s.type === "pink" ? 3 : 1) * (DAY === 7 ? 1 + Math.floor(combo / 5) : 1);
+          score += pts; combo++; bestCombo = Math.max(bestCombo, combo);
+          popups.push({ x: s.x, y: basket.y - 20, txt: "+" + pts, color: s.type === "pink" ? "#ff8ad8" : "#ffd94a", life: 0.9 });
+          burst(s.x, basket.y, s.type === "pink" ? "#ff8ad8" : "#ffd94a", 12);
+        }
+        return false;
+      }
+      if (s.y > H + 30) { if (DAY === 7) combo = 0; return false; }
+      return true;
+    });
+    for (const p of parts) { p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 500 * dt; p.life -= dt; }
+    parts = parts.filter(p => p.life > 0);
+    for (const p of popups) { p.y -= 40 * dt; p.life -= dt; }
+    popups = popups.filter(p => p.life > 0);
+  }
+  sky();
+  ctx.fillStyle = "#3a2b1c"; ctx.fillRect(0, GROUND + 34, W, H - GROUND - 34);
+  ctx.fillStyle = "#57b25e"; ctx.fillRect(0, GROUND + 34, W, 6);
+  for (const s of stars) {
+    ctx.save(); ctx.translate(s.x, s.y); ctx.rotate(s.spin);
+    if (s.type === "bomb") {
+      ctx.fillStyle = "#222"; ctx.beginPath(); ctx.arc(0, 0, s.r, 0, 7); ctx.fill();
+      ctx.strokeStyle = "#ff5a5a"; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.moveTo(0, -s.r); ctx.lineTo(0, -s.r - 10); ctx.stroke();
+      ctx.fillStyle = "#ffb03a"; ctx.beginPath(); ctx.arc(0, -s.r - 12, 4, 0, 7); ctx.fill();
+    } else starShape(0, 0, s.r, s.type === "pink" ? "#ff8ad8" : "#ffd94a");
+    ctx.restore();
+  }
+  for (const p of parts) { ctx.globalAlpha = Math.max(0, p.life); ctx.fillStyle = p.color;
+    ctx.fillRect(p.x - 3, p.y - 3, 6, 6); }
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = "#8a5a2b";
+  ctx.beginPath(); ctx.moveTo(basket.x, basket.y);
+  ctx.lineTo(basket.x + basket.w, basket.y);
+  ctx.lineTo(basket.x + basket.w - 14, basket.y + basket.h);
+  ctx.lineTo(basket.x + 14, basket.y + basket.h); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = "#a9743c"; ctx.fillRect(basket.x, basket.y, basket.w, 8);
+  ctx.font = "bold 20px system-ui,sans-serif"; ctx.textAlign = "left";
+  for (const p of popups) { ctx.globalAlpha = Math.max(0, p.life); ctx.fillStyle = p.color;
+    ctx.fillText(p.txt, p.x - 10, p.y); }
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = "#fff"; ctx.font = "bold 30px system-ui,sans-serif";
+  ctx.fillText("SCORE " + score, 20, 52);
+  ctx.font = "bold 24px system-ui,sans-serif"; ctx.textAlign = "right";
+  ctx.fillStyle = "#cfe0ff"; ctx.fillText("TIME " + Math.ceil(timeLeft) + "s", W - 20, 50);
+  ctx.textAlign = "left"; ctx.font = "bold 22px system-ui,sans-serif";
+  ctx.fillStyle = "#ffd94a";
+  ctx.fillText(DAY === 1 ? "DAY 1" : "DAY 7  ·  LEVEL " + level, 20, 92);
+  if (DAY === 7 && combo >= 3) { ctx.fillStyle = "#ff8ad8";
+    ctx.fillText("COMBO x" + (1 + Math.floor(combo / 5)), 20, 126); }
+  ctx.fillStyle = "#8fa3c8"; ctx.font = "18px system-ui,sans-serif";
+  ctx.fillText("BEST " + best, 20, H - 24);
+  if (!started) {
+    ctx.fillStyle = "rgba(5,8,20,.72)"; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = "#fff"; ctx.textAlign = "center"; ctx.font = "bold 44px system-ui,sans-serif";
+    ctx.fillText("STARFALL CATCHER", W / 2, H / 2 - 60);
+    ctx.font = "28px system-ui,sans-serif"; ctx.fillStyle = "#ffd94a";
+    ctx.fillText(DAY === 1 ? "Day 1 — one basket, one star" : "Day 7 — same game, a week of updates", W / 2, H / 2);
+    ctx.fillStyle = "#cfe0ff"; ctx.font = "24px system-ui,sans-serif";
+    ctx.fillText("Press an arrow key or tap to play", W / 2, H / 2 + 60);
+    ctx.textAlign = "left";
+  }
+  if (over) {
+    ctx.fillStyle = "rgba(5,8,20,.78)"; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = "#fff"; ctx.textAlign = "center"; ctx.font = "bold 48px system-ui,sans-serif";
+    ctx.fillText("TIME UP!", W / 2, H / 2 - 80);
+    ctx.font = "bold 34px system-ui,sans-serif"; ctx.fillStyle = "#ffd94a";
+    ctx.fillText("Score: " + score + "  ·  Caught: " + caught, W / 2, H / 2 - 10);
+    ctx.fillStyle = "#cfe0ff"; ctx.font = "26px system-ui,sans-serif";
+    ctx.fillText("Best combo x" + (1 + Math.floor(bestCombo / 5)) + "  ·  Best score " + best, W / 2, H / 2 + 44);
+    ctx.fillText("Reload to play again", W / 2, H / 2 + 96);
+    ctx.textAlign = "left";
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
